@@ -115,12 +115,8 @@ classdef RPNNEF
         function [ results ] = combine_forecasts( data )
 
             % mean and median combination
-            sze=size(data,2);
-            if(mod(sze,2)~=1) 
-                sze=sze-1;
-            end
             results(:,1)=mean(data,2);
-            results(:,2)=median(data(:,1:sze),2);
+            results(:,2)=median(data,2);
             
         end        
         function [ results ] = performance( forecasts, targets )
