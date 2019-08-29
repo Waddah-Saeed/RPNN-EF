@@ -12,10 +12,6 @@ classdef RPNNEF
         
         function [ results, net, ann ] = training( ann )
             % train networks
-            
-            %     if ~exist('max_epoch', 'var')
-            %         max_epoch = 3000;
-            %     end
 
             results.time = -1*ones(ann.repeats,ann.max_order);                % time
             results.mse_train = 100*ones(ann.repeats,ann.max_order);          % MSE on training data
@@ -50,7 +46,7 @@ classdef RPNNEF
                     start_time=tic;
 
                     % create the pi-sigma and initialize its weights and biases
-                    NN2 = RPNNEF.create_psnn(ann.input_nodes,order,ann.lr,SH);
+                    NN2 = RPNNEF.create_psnn(ann.input_nodes,order,ann.lr,SH,ann.mom);
 
                     % store initial weights & biases
                     net.weights_initial{n,order}=NN2.W1;
@@ -115,8 +111,12 @@ classdef RPNNEF
         function [ results ] = combine_forecasts( data )
 
             % mean and median combination
+            sze=size(data,2);
+            if(mod(sze,2)~=1) 
+                sze=sze-1;
+            end
             results(:,1)=mean(data,2);
-            results(:,2)=median(data,2);
+            results(:,2)=median(data(:,1:sze),2);
             
         end        
         function [ results ] = performance( forecasts, targets )
@@ -157,7 +157,7 @@ classdef RPNNEF
 
             NN1.Z = initFeedback;
         end
-        function [NN2] = create_psnn(numIn,numHidden,LR,SH)
+        function [NN2] = create_psnn(numIn,numHidden,LR,SH,momentum)
             % initialization
             
             r=power((6/(numIn+1)),1/4);
@@ -171,7 +171,8 @@ classdef RPNNEF
             NN2.B1_delta = zeros(1,numHidden);
 
             NN2.LR = LR;
-
+            NN2.MOM = momentum;
+            
             NN2.P_previous = zeros(numIn,SH);  %Previous state (the dynamic system variable)
             NN2.PBIAS_previous = zeros(1,SH);
 
@@ -209,15 +210,12 @@ classdef RPNNEF
                 end
                 
                 % calculate whether to increase the order of pi-sigma or not
-                check_add_order = ((training_error - prev_err)/ prev_err);
-                check_add_order = abs(check_add_order);
-                if (check_add_order >= ann.r)
-                    prev_err = training_error;
-                    epoch = epoch + 1;   
-                else
+                check_add_order = abs(training_error - prev_err)/ prev_err;
+                prev_err = training_error;
+                epoch = epoch + 1; 
+                    
+                if (check_add_order < ann.r)
                     % exit to add a higher order
-                    epoch = epoch + 1;   
-                    prev_err = training_error;
                     break;
                 end
                 new_order=0;
@@ -230,7 +228,7 @@ classdef RPNNEF
         end
         function [NN1,NN2,all_tr_error, forecasts_train, training_error] = train(NN1,NN2,ann, all_tr_error, order, epoch)
             tr_error = 0;
-            len=length(ann.inputs_train);
+            len = length(ann.inputs_train);
 
             forecasts_train = zeros(len,1); %PRE-ALLOCATION
 
@@ -240,13 +238,12 @@ classdef RPNNEF
                 Y = ann.targets_train(i,:);
 
                 [NN1,NN2] = RPNNEF.feedforward(X,NN1,NN2,order,Y);
-                error_1 = (ann.targets_train(i) - NN1.output_signal);
+                error_1 = (Y - NN1.output_signal);
 
                 [NN1, NN2] = RPNNEF.backpropagate(error_1,NN1,NN2, epoch,i);
 
                 forecasts_train(i)=NN1.output_signal;
-                squared_error = power(error_1,2.0); 
-                tr_error = tr_error + squared_error ; %SSE
+                tr_error = tr_error + power(error_1,2.0) ; %SSE
                 
                 [NN1, NN2] = RPNNEF.update(NN1,NN2,order);  
 
@@ -266,17 +263,15 @@ classdef RPNNEF
         function [NN1,NN2] = feedforward(X,NN1,NN2,order,Y)
             % feedforward the inputs and calculate error feedback
             
-            NN1.X = X;
-            NN1.X = [NN1.X,NN1.Z];   %concatenate external inputs and context node
+            NN1.X = [X,NN1.Z];   %concatenate external inputs and context node
 
             NN1.hidden = (NN1.X*NN1.W1) + NN1.B1;
 
             SH = 0;
 
             for j= 1:order
-                SH =  SH + 1;  
-                summing = [NN1.hidden(:,SH:j - 1 + SH)];  
-                NN1.product(j)= prod(summing);
+                SH =  SH + 1;
+                NN1.product(j)= prod(NN1.hidden(:,SH:j - 1 + SH));
                 SH = (j - 1) + SH;
             end
 
@@ -297,53 +292,44 @@ classdef RPNNEF
             NN1.W1_BOY = NN1.E*NN1.out_derivative; %(1X1)   
 
             % CALCULATE GRADIENT FOR W1,B1
-            input_node = NN1.X;
-            if ((epoch ==  NN2.epoch) && (i == 1))
-                weights = NN2.W1;
-            else
+            if ((i ~= 1) || (epoch ~=  NN2.epoch))
                 weights = NN2.W1_update;
+            else
+                weights = NN2.W1;
             end
 
             [row,column] = size(weights);
             SH = NN2.store_hidden;
             NN2.hidden = NN1.hidden(:,SH:end);
-
+            prod_hidden= prod(NN2.hidden);
+            
             % %involve in the latest added PSN only
-
-            W=zeros(row,column);
-            P=zeros(row,column);  %variable for dynamic system (Pij)
-            input_hidden_wts = zeros(row,column);
+            NN2.W1_delta = zeros(row,column);
+            P=zeros(row,column);
             for n = 1: row
-                node_wts = zeros(1,column);
                 for h = 1 :column
-                    W(n,h) = prod(NN2.hidden) ./ NN2.hidden(h);   
-                    P(n,h) = -1*NN1.out_derivative .* W(n,h) .* (input_node(n) + (weights(end,h) .* NN2.P_previous(n,h)));% Pij = (1 - output)*output  * W(n,h) * [input node   +   (wts from context to that particular summing * Pij(previous))]
-                    delta_w = -1*NN2.LR * NN1.E * P(n,h);
-                    node_wts(h) = delta_w;
+                    W = prod_hidden ./ NN2.hidden(h);   
+                    P(n,h) = -1*NN1.out_derivative .* W .* (NN1.X(n) + (weights(end,h) .* NN2.P_previous(n,h)));% Pij = (1 - output)*output  * W * [input node   +   (wts from context to that particular summing * Pij(previous))]
+                    NN2.W1_delta(n,h) = -1*NN2.LR * NN1.E * P(n,h);
                 end
-                input_hidden_wts(n,:) = node_wts;
             end
 
-            biases=zeros(1,column);
-            PB=zeros(1,column);  %variable for dynamic system (Pij)
+            NN2.B1_delta=zeros(1,column);
+            PB=zeros(1,column); 
             for b=1:column
-                 bias(b) = prod(NN2.hidden) ./NN2.hidden(b);
-                 PB(1,b) = -1*NN1.out_derivative .* bias(b) .* (1 + (weights(end,b) .* NN2.PBIAS_previous(1,b)));
-                 delta_b = -1*NN2.LR * NN1.E * PB(1,b);
-                 biases(b)=delta_b;
+                 bias = prod_hidden ./NN2.hidden(b);
+                 PB(1,b) = -1*NN1.out_derivative .* bias .* (1 + (weights(end,b) .* NN2.PBIAS_previous(1,b)));
+                 NN2.B1_delta(b) = -1*NN2.LR * NN1.E * PB(1,b);
             end
 
-             NN2.W1_delta = input_hidden_wts;
-             NN2.B1_delta = biases;
-
-             NN2.P_previous = P; % store current state as a previous state (to be used in the next time step/next pattern data)
-             NN2.PBIAS_previous=PB;
+            NN2.P_previous = P; % store current state as a previous state (to be used in the next time step/next pattern data)
+            NN2.PBIAS_previous=PB;
         end
         function [NN1, NN2] = update(NN1,NN2, order)
             % update training parameters
             
-            NN2.W1_update = (NN2.W1_delta);
-            NN2.B1_update = (NN2.B1_delta);  
+            NN2.W1_update = NN2.W1_delta + (NN2.MOM * NN2.W1_update);
+            NN2.B1_update = NN2.B1_delta + (NN2.MOM * NN2.B1_update);  
 
             add_col = 0;
             for i = 1: order
@@ -388,7 +374,7 @@ classdef RPNNEF
 
             for j= 1:order
                 SH =  SH + 1;  
-                summing = [NN.hidden(:,SH:j - 1 + SH)];  
+                summing = NN.hidden(:,SH:j - 1 + SH);  
                 NN.product(j)= prod(summing);
                 SH = (j - 1) + SH;
             end
