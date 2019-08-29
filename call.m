@@ -37,17 +37,23 @@
 
     % suppose the univariate time series is called 'data'
     load('example.mat');
+    disp('Data has been loaded.');
+    
     test_size = 300;    % the size of out-of-sample set
     ts = TS.prepare(data, test_size);   % prepare time series based on the given test_size
     
     lower=0.2;
     upper=0.8;
+    scaled=true;
+    
 	ts_scaled = TS.scale(ts,lower,upper);   % scale time series based on the given lower and upper values
+    disp(['Data has been scaled between [', num2str(lower), ',' , num2str(upper), ']']);
     
     lags=3;
     ts_scaled = TS.createlags(ts_scaled,lags);  % construct samples based on the given lags
     [ann] = TS.split(ts_scaled);    % split the data into training and out-of-sample sets
-
+    disp(['Data has been splitted and ready for training. The size of out-of-sample set is ', num2str(test_size), ' points.']);
+    
     
 %% STEP 2: Train RPNN-EF & do 1-step forecasting
 
@@ -63,18 +69,23 @@
    
     % for better forecasting performance you need to try different values at least for these three parameters
     ann.lr=0.3;                 %	Learning rate value (try for example [0.01, 0.03, 0.1, 0.3, 1])
+    ann.mom=0.9;                 %	Momentum value (try for example [0.9, 0.8, 0.7, ...])
     ann.r=0.0001;               %   Threshold to increase another pi-sigma network of increasing order (try for example [0.00001, 0.0001, 0.001, 0.01, 0.1])
     ann.dec_r=0.01;              %   Decrease factor of r (try for example [0.05, 0.1, 0.2])
 
     ann.dec_lr = 0.8;           %   Decrease factor of lr
-    ann.max_epoch= 3000;        % 	Maximum number of epochs
+    ann.max_epoch= 500;        % 	Maximum number of epochs
     ann.max_order=5;            %   Maximum order of the network
     ann.min_err=0.00001;        %   Threshold to stop the whole training
     ann.factor_reduction=1e-8;  %   Stop training if there is no reduction in error by a factor of at least 1 - factor_reduction
     
     ann.repeats=3;             %   Number of networks to train
+
+    disp('Start training...');
     
     [ results_train, net, ann_new ] = RPNNEF.training( ann );   % train the networks
+    
+    disp('Training has been completed.');
     
     % forecasts using mean and median combination
     results_train.training_forecasts_scaled = RPNNEF.combine_forecasts(results_train.forecasts_train);
@@ -83,16 +94,17 @@
     results_test = RPNNEF.forecast( ann, net );
     
 %% STEP 3: De-scale
-    % if you scale the data, you need to return it to its original scale,
-    % otherwise, uncomment these
-    %   results_train.training_forecasts = results_train.training_forecasts_scaled;
-    %   results_test.forecasts = results_test;
-    
-    % return the forecasts to the original scale
-    results_train.training_forecasts = TS.descale(results_train.training_forecasts_scaled, lower, upper, ts.minn, ts.maxx);
-    
-    % return the forecasts to the original scale
-    results_test.forecasts = TS.descale(results_test.combines, lower, upper, ts.minn, ts.maxx);
+    % if you scaled the data, you need to return it to its original scale,
+    % otherwise, uncomment these and comment
+    if(scaled==true)
+        % return the forecasts to the original scale
+        results_train.training_forecasts = TS.descale(results_train.training_forecasts_scaled, lower, upper, ts.minn, ts.maxx);
+        results_test.forecasts = TS.descale(results_test.combines, lower, upper, ts.minn, ts.maxx);
+        disp('Data has been de-scaled.');
+    else
+        results_train.training_forecasts = results_train.training_forecasts_scaled;
+        results_test.forecasts = results_test;
+    end 
     
 %% STEP 4: Print & plot the forecasting performance
 
@@ -106,8 +118,6 @@
  
     % check how good is forecasting performance using out-of-sample set     
     perf_test = RPNNEF.performance( results_test.forecasts, OriginalTestingSeries );
-
-%% STEP 5: Print results
 
     disp('************************************');
     disp('-----------Training error----------');
@@ -135,7 +145,7 @@
     figure(2);
     plot(xx,ts.ts_test,'-k','LineWidth',1);
     hold on;
-    plot(xx,results_test.forecasts(:,2),'-b','LineWidth',1);
+    plot(xx,results_test.forecasts(:,2),'-r','LineWidth',1);
     xlabel('Time');
     ylabel('Time series values');
     title('Out-of-sample forecasting');
