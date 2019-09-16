@@ -1,6 +1,6 @@
 classdef RPNNEF
     % Ridge Polynomial Neural Network with Error Feedback
-    % Author: Waddah Waheeb
+    % Author: Waddah Waheeb & Rozaida Ghazali
 
     % For more detail about the model, please refer to the following article: 
     % Ridge Polynomial Neural Network with Error Feedback for Time Series Forecasting
