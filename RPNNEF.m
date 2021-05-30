@@ -10,7 +10,7 @@ classdef RPNNEF
     
     methods(Static)
         
-        function [ results, net, ann ] = training( ann )
+        function [ results, net, ann ] = fit( ann, inputs_train, targets_train )
             % train networks
 
             results.time = -1*ones(ann.repeats,ann.max_order);                % time
@@ -65,13 +65,15 @@ classdef RPNNEF
                     disp(['Run : ',num2str(n), ', RPNN-EF of order : ',num2str(order)]);
                     
                     % start training
-                    [NN2,NN1, forecast_TR, curr_err, epoch, prev_err,all_tr_error,factor_flag] = RPNNEF.learn(NN2,NN1,ann, order, prev_err, epoch ,all_tr_error); 
+                    [NN2,NN1, forecast_TR, curr_err, epoch, prev_err,all_tr_error,factor_flag] = RPNNEF.train(NN2,NN1,ann, inputs_train, targets_train, order, prev_err, epoch ,all_tr_error); 
 
                     % store results after training for the given network order
                     results.time(n,order) = toc(start_time);
                     results.epoch(n,order) = epoch; 
                     results.mse_train(n,order) = curr_err;
-                    results.forecasts_train=[results.forecasts_train,forecast_TR];
+                    %results.forecasts_train=[results.forecasts_train,forecast_TR];
+
+                    results.network_outputs(:,n) = forecast_TR;
                     
                     net.weights_final{n,order}=NN1.W1;
                     net.biases_final{n,order}=NN1.B1;
@@ -90,8 +92,34 @@ classdef RPNNEF
                 
             end
             
+        end
+        function [ results ] = combine_forecasts( outputs )
+
+            % mean and median combination
+            sze=size(outputs,2);
+            if(mod(sze,2)~=1) 
+                sze=sze-1;
+                disp('The last simulation results will be ignored when calculating the median.');
+            end
+            results(:,1)=mean(outputs,2);
+            results(:,2)=median(outputs(:,1:sze),2);
+            
         end        
-        function [ results ] = forecast( ann, net )
+        function [ results ] = performance( forecasts, targets )
+            % forecasting performance
+            
+            results.Error = targets - forecasts;
+            SE = power(results.Error,2);
+            results.MSE= mean(SE);
+            results.RMSE= sqrt(results.MSE);
+            results.MAE= mean(abs(results.Error));
+
+            mean_targets = mean(targets);
+            summ = sum(power(targets-mean_targets,2));
+            results.NMSE = sum(SE) / summ;
+            
+        end       
+        function [ results ] = forecast( ann, net, inputs_test, targets_test, forecast_horizon  )
             
             % 1-step forecasts based on mean and median combination 
             results.fcasts=[];
@@ -99,44 +127,18 @@ classdef RPNNEF
             
             for n=1:ann.repeats
 
-                [forecast_TEST, err_input_test_row] = RPNNEF.test(net.NN{1,n}, ann, net.order(1,n));
-
+                if (forecast_horizon == 1)
+                    [forecast_TEST, err_input_test_row] = RPNNEF.one_step(net.NN{1,n}, inputs_test, targets_test, net.order(1,n));
+                else
+                    [forecast_TEST, err_input_test_row] = RPNNEF.multi_step(net.NN{1,n}, net.order(1,n), forecast_horizon, inputs_test(1,:));
+                end
+                
                 results.fcasts=[results.fcasts,forecast_TEST];
                 results.err_input_test_row=[results.err_input_test_row,err_input_test_row];        
 
             end
             
             results.combines= RPNNEF.combine_forecasts( results.fcasts );
-        end
-        function [ results ] = combine_forecasts( data )
-
-            % mean and median combination
-            sze=size(data,2);
-            if(mod(sze,2)~=1) 
-                sze=sze-1;
-            end
-            results(:,1)=mean(data,2);
-            results(:,2)=median(data(:,1:sze),2);
-            
-        end        
-        function [ results ] = performance( forecasts, targets )
-            % forecasting performance
-            
-            fcasts=size(forecasts,2);
-            for i=1: fcasts
-                Error = targets - forecasts(:,i);
-
-                SE= power(Error,2);
-                results.MSE(:,i)= mean(SE);
-                results.RMSE(:,i)= sqrt(results.MSE(:,i));
-
-                results.MAE(:,i)= mean(abs(Error));
-
-                mean_targets = mean(targets);
-                summ= sum(power(targets-mean_targets,2));
-                results.NMSE(:,i) = sum(SE) / summ;
-            end
-            
         end
         
     end
@@ -179,11 +181,12 @@ classdef RPNNEF
             NN2.store_hidden = SH;
 
         end
-        function [NN2,NN1, forecast_train, training_error, epoch, prev_err, all_tr_error, factor_flag] = learn(NN2,NN1,ann, order, prev_err, epoch , all_tr_error)
+        function [NN2,NN1, network_outputs,training_error, epoch, prev_err, all_tr_error, factor_flag] = train(NN2,NN1,ann, inputs_train, targets_train, order, prev_err, epoch , all_tr_error)
             % train a network model
             
             NN2.epoch  = epoch;
             factor_flag = 0;
+            len = length(inputs_train);
             
             % because adding a new higher order leads usually in increasing error 
             % therefore when this variable equals 1 means no need to check
@@ -191,8 +194,29 @@ classdef RPNNEF
             new_order=1;    
 
             while (epoch < ann.max_epoch)
+                
+                tr_error = 0;
+                network_outputs = zeros(len,1); %PRE-ALLOCATION
+                
+                for i = 1 : len
 
-                [NN1,NN2, all_tr_error, forecasts_train, training_error] = RPNNEF.train(NN1,NN2,ann, all_tr_error, order, epoch);
+                    X = inputs_train(i,:);
+                    Y = targets_train(i,:);
+
+                    [NN1,NN2] = RPNNEF.feedforward(X,NN1,NN2,order,Y);
+                    error_1 = (Y - NN1.output_signal);
+
+                    [NN1, NN2] = RPNNEF.backpropagate(error_1,NN1,NN2, epoch,i);
+
+                    network_outputs(i)=NN1.output_signal;
+                    tr_error = tr_error + power(error_1,2.0) ; %SSE
+
+                    [NN1, NN2] = RPNNEF.update(NN1,NN2,order);  
+
+                end
+
+                training_error = tr_error / len; % MSE
+                all_tr_error = [all_tr_error; training_error];  % all training error
                 
                 if(training_error <= ann.min_err)
                     break;  % exit from while loop
@@ -223,42 +247,6 @@ classdef RPNNEF
 
            disp(['Epoch = ', num2str(epoch), ', Training Error = ', num2str(training_error), ', Target Error = ', num2str(ann.min_err)]);
 
-           forecast_train = forecasts_train;
-
-        end
-        function [NN1,NN2,all_tr_error, forecasts_train, training_error] = train(NN1,NN2,ann, all_tr_error, order, epoch)
-            tr_error = 0;
-            len = length(ann.inputs_train);
-
-            forecasts_train = zeros(len,1); %PRE-ALLOCATION
-
-            for i = 1 : len        
-
-                X = ann.inputs_train(i,:);
-                Y = ann.targets_train(i,:);
-
-                [NN1,NN2] = RPNNEF.feedforward(X,NN1,NN2,order,Y);
-                error_1 = (Y - NN1.output_signal);
-
-                [NN1, NN2] = RPNNEF.backpropagate(error_1,NN1,NN2, epoch,i);
-
-                forecasts_train(i)=NN1.output_signal;
-                tr_error = tr_error + power(error_1,2.0) ; %SSE
-                
-                [NN1, NN2] = RPNNEF.update(NN1,NN2,order);  
-
-            end
-
-            training_error = tr_error / len; % MSE
-            all_tr_error = [all_tr_error; training_error];  % all training error
-
-            if(training_error <= ann.min_err)
-                disp('------------------------------------------------');
-                disp('              STOP TRAINING                     ');
-                disp('    Minimum Sum of Error is reached             ');
-                disp('------------------------------------------------');  
-                return;  % exit from this function
-            end
         end
         function [NN1,NN2] = feedforward(X,NN1,NN2,order,Y)
             % feedforward the inputs and calculate error feedback
@@ -344,48 +332,73 @@ classdef RPNNEF
             NN1.B1 = NN1.B1 + NN1.B1_update;
              
         end
-        function [forecast_test, err_feedback_values] = test(net, ann,order)
-            % forecast the nest point based on the given inputs
-            len=length(ann.inputs_test);
+        function [forecast_test, err_feedback_values] = one_step(net, inputs_test,targets_test,order)
+            % forecast the next point based on the given inputs
+            len=length(inputs_test);
 
             forecast_test = zeros(len,1);
             err_feedback_values = zeros(len,1);
-
+            
             for i = 1 : len
 
-                X = ann.inputs_test(i,:);
-                Y = ann.targets_test(i,:);
+                X = inputs_test(i,:);
+                Y = targets_test(i,:);
                 err_feedback_values(i,:)= net.Z;
+                
+                net.X = [X,net.Z];
+                net.hidden = (net.X*net.W1) + net.B1;
+                SH = 0;
 
-                [net] = RPNNEF.apply(X,net,Y,order);
+                for j= 1:order
+                    SH =  SH + 1;  
+                    summing = net.hidden(:,SH:j - 1 + SH);  
+                    net.product(j)= prod(summing);
+                    SH = (j - 1) + SH;
+                end
 
+                %OUTPUT SIGNAL FOR OUTPUT LAYER
+                net.output = sum(net.product);
+                net.output_signal = 1.0 ./ (1.0 + exp(-1*net.output ));
+
+                net.Z = Y-net.output_signal;            
+            
                 forecast_test(i)=net.output_signal;
             end
 
         end
-        function [NN] = apply(X,NN,Y,order)
+        
+        function [forecast_test, err_feedback_values] = multi_step(net, order, forecast_horizon, input_test)
+            % multi-step forecasts
 
-            NN.X = X;
-            NN.X = [NN.X,NN.Z];
+            forecast_test = zeros(forecast_horizon,1);
+            err_feedback_values = zeros(forecast_horizon,1);
+            X = input_test;
+            
+            for i = 1 : forecast_horizon
+    
+                err_feedback_values(i,:)= 0;
+                
+                net.X = [X,net.Z];
+                net.hidden = (net.X*net.W1) + net.B1;
+                SH = 0;
 
-            NN.hidden = (NN.X*NN.W1) + NN.B1;
+                for j= 1:order
+                    SH =  SH + 1;  
+                    summing = net.hidden(:,SH:j - 1 + SH);  
+                    net.product(j)= prod(summing);
+                    SH = (j - 1) + SH;
+                end
 
-            SH = 0;
+                %OUTPUT SIGNAL FOR OUTPUT LAYER
+                net.output = sum(net.product);
+                net.output_signal = 1.0 ./ (1.0 + exp(-1*net.output ));
 
-            for j= 1:order
-                SH =  SH + 1;  
-                summing = NN.hidden(:,SH:j - 1 + SH);  
-                NN.product(j)= prod(summing);
-                SH = (j - 1) + SH;
+                net.Z = 0;
+                X =  [X(1,2:end) net.output_signal];
+                
+                forecast_test(i)=net.output_signal;
             end
 
-            %OUTPUT SIGNAL FOR OUTPUT LAYER
-             NN.output = sum(NN.product);
-
-             NN.output_signal = 1.0 ./ (1.0 + exp(-1*NN.output ));
-             NN.Z = Y-NN.output_signal;
-             
-        end
-        
+        end        
     end
 end
