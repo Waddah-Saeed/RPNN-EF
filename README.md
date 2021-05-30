@@ -3,7 +3,7 @@
 HOW TO RUN:
 Open call.m and run it!
 
-RPNN-EF Class contains methods to train and test RPNN-EF method for 1-step time series forecasting
+RPNN-EF Class contains methods to train and test RPNN-EF method for time series forecasting
 
 ------------------------------------------------------------------------------------------------------
 
